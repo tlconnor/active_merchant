@@ -1,3 +1,4 @@
+require 'cgi'
 require 'openssl'
 require 'base64'
 module ActiveMerchant #:nodoc:
@@ -65,21 +66,18 @@ module ActiveMerchant #:nodoc:
       def initialize(options = {})
         requires!(options, :login, :password)
         
-        headers = if options[:access_token]
-          access_token = options.delete(:access_token)
-          access_secret = options.delete(:access_secret)
-
-          {'X-PAYPAL-AUTHORIZATION' => x_pp_authorization_header(access_token, access_secret)}
-        else
-          {}
-        end
+        access_token = options.delete(:access_token)
+        access_secret = options.delete(:access_secret)
 
         @options = {
           :pem => pem_file,
           :signature => signature,
-          :headers => headers || {}
+          :headers => {}
         }.update(options)
 
+        if access_token
+          @options[:headers] = {'X-PAYPAL-AUTHORIZATION' => x_pp_authorization_header(endpoint_url, options[:login], options[:password], access_token, access_secret)}
+        end
         
         if @options[:pem].blank? && @options[:signature].blank?
           raise ArgumentError, "An API Certificate or API Signature is required to make requests to PayPal" 
@@ -87,7 +85,7 @@ module ActiveMerchant #:nodoc:
         
         super
       end
-      
+
       def test?
         @options[:test] || Base.gateway_mode == :test
       end
@@ -646,39 +644,53 @@ module ActiveMerchant #:nodoc:
         (date.is_a?(Date) ? date.to_time : date).utc.iso8601
       end
 
-      def x_pp_authorization_header(access_token, access_secret)
+      def x_pp_authorization_header(url, api_user_id, api_password, access_token, access_token_verifier)
         timestamp = Time.now.to_i.to_s
-        signature = x_pp_authorization_signature(timestamp, access_token, access_secret)
+        signature = x_pp_authorization_signature url, api_user_id, api_password, timestamp, access_token, access_token_verifier
         "token=#{access_token},signature=#{signature},timestamp=#{timestamp}"
       end
 
-      def x_pp_authorization_signature(timestamp, access_token, access_secret)
+      def x_pp_authorization_signature(url, api_user_id, api_password, timestamp, access_token, access_token_verifier)
         # no query params, but if there were, this is where they'd go
         query_params = {}
         key = [
-          URI.encode(@options[:password]),
-          URI.encode(access_secret),
+          paypal_encode(api_password),
+          paypal_encode(access_token_verifier),
         ].join("&")
 
         params = query_params.dup.merge({
-          "oauth_consumer_key" => @options[:login],
+          "oauth_consumer_key" => api_user_id,
           "oauth_version" => "1.0",
           "oauth_signature_method" => "HMAC-SHA1",
           "oauth_token" => access_token,
           "oauth_timestamp" => timestamp,
         })
-        sorted_params = Hash[params.sort]
-        sorted_query_string = sorted_params.to_query
+        sorted_query_string = params.collect do |key, value|
+          "#{key}=#{value}"
+        end.sort * '&'
 
         base = [
           "POST",
-          URI.encode(endpoint_url),
-          URI.encode(sorted_query_string)
+          paypal_encode(url),
+          paypal_encode(sorted_query_string)
         ].join("&")
+        base = base.gsub /%([0-9A-F])([0-9A-F])/ do
+          "%#{$1.downcase}#{$2.downcase}"  # hack to match PayPal Java SDK bit for bit
+        end
 
-        hexdigest = OpenSSL::HMAC.hexdigest('sha1', key, base)
-        Base64.encode64(hexdigest).chomp
-      end      
+        digest = OpenSSL::HMAC.digest('sha1', key, base)
+        Base64.encode64(digest).chomp
+      end
+
+      # The PayPalURLEncoder java class percent encodes everything other than 'a-zA-Z0-9 _'.
+      # Then it converts ' ' to '+'.
+      # Ruby's CGI.encode takes care of the ' ' and '*' to satisfy PayPal
+      # (but beware, URI.encode percent encodes spaces, and does nothing with '*').
+      # Finally, CGI.encode does not encode '.-', which we need to do here.
+      def paypal_encode(str)
+        s = str.dup
+        CGI.escape(s).gsub('.', '%2E').gsub('-', '%2D')
+      end
     end
   end
 end
