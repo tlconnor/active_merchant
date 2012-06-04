@@ -66,7 +66,7 @@ module ActiveMerchant #:nodoc:
         requires!(options, :login, :password)
         
         headers = if options[:access_token]
-          acess_token = options.delete(:access_token)
+          access_token = options.delete(:access_token)
           access_secret = options.delete(:access_secret)
 
           {'X-PAYPAL-AUTHORIZATION' => x_pp_authorization_header(access_token, access_secret)}
