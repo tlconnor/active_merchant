@@ -1,3 +1,5 @@
+require 'openssl'
+require 'base64'
 module ActiveMerchant #:nodoc:
   module Billing #:nodoc:
     # This module is included in both PaypalGateway and PaypalExpressGateway
@@ -63,7 +65,15 @@ module ActiveMerchant #:nodoc:
       def initialize(options = {})
         requires!(options, :login, :password)
         
-        headers = {'X-PP-AUTHORIZATION' => options.delete(:auth_signature), 'X-PAYPAL-MESSAGE-PROTOCOL' => 'SOAP11'} if options[:auth_signature]
+        headers = if options[:access_token]
+          acess_token = options.delete(:access_token)
+          access_secret = options.delete(:access_secret)
+
+          {'X-PAYPAL-AUTHORIZATION' => x_pp_authorization_header(access_token, access_secret)}
+        else
+          {}
+        end
+
         @options = {
           :pem => pem_file,
           :signature => signature,
@@ -635,6 +645,40 @@ module ActiveMerchant #:nodoc:
       def date_to_iso(date)
         (date.is_a?(Date) ? date.to_time : date).utc.iso8601
       end
+
+      def x_pp_authorization_header(access_token, access_secret)
+        timestamp = Time.now.to_i.to_s
+        signature = x_pp_authorization_signature(timestamp, access_token, access_secret)
+        "token=#{access_token},signature=#{signature},timestamp=#{timestamp}"
+      end
+
+      def x_pp_authorization_signature(timestamp, access_token, access_secret)
+        # no query params, but if there were, this is where they'd go
+        query_params = {}
+        key = [
+          URI.encode(@options[:password]),
+          URI.encode(access_secret),
+        ].join("&")
+
+        params = query_params.dup.merge({
+          "oauth_consumer_key" => @options[:login],
+          "oauth_version" => "1.0",
+          "oauth_signature_method" => "HMAC-SHA1",
+          "oauth_token" => access_token,
+          "oauth_timestamp" => timestamp,
+        })
+        sorted_params = Hash[params.sort]
+        sorted_query_string = sorted_params.to_query
+
+        base = [
+          "POST",
+          URI.encode(endpoint_url),
+          URI.encode(sorted_query_string)
+        ].join("&")
+
+        hexdigest = OpenSSL::HMAC.hexdigest('sha1', key, base)
+        Base64.encode64(hexdigest).chomp
+      end      
     end
   end
 end
